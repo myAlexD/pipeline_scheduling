@@ -93,7 +93,7 @@ def _validate_pipeline(file_path):
             # Validate dependencies (can be empty, so no check required)
             dependencies = lines[i + 3].strip()
             if dependencies:
-                if not all(dep.isalpha() for dep in dependencies.split(',')):
+                if not all(dep.isalnum() for dep in dependencies.split(',')):
                     return False, f"Invalid dependencies for task {task_name}"
 
         return True, "Valid input file"
@@ -109,40 +109,54 @@ def _check_for_undefined_tasks(task_list):
 def get_min_execution_time(tasks, cpu_cores):
     time = 0
     schedule = []
-    executing_tasks = {}  
+    executing_tasks = {}
     ready_tasks = [task for task in tasks.values() if len(task.dependencies) == 0]
+    waiting_tasks = [task for task in tasks.values() if task not in ready_tasks]
+    groups_in_execution = set()
 
-    while len(tasks) > 0 or len(executing_tasks) > 0:
-        just_completed = [task_name for task_name, task in executing_tasks.items() if task.time == 0]
+    while executing_tasks or ready_tasks or waiting_tasks:
+        just_completed = [task_name for task_name, task in list(executing_tasks.items()) if task.time == 0]
+        
         for completed_task in just_completed:
+            task_group = executing_tasks[completed_task].group
+            groups_in_execution.discard(task_group)
             del executing_tasks[completed_task]
-            del tasks[completed_task]
-            for task in tasks.values():
+
+            for task in list(waiting_tasks):
                 task.dependencies.discard(completed_task)
                 if len(task.dependencies) == 0:
                     ready_tasks.append(task)
+                    waiting_tasks.remove(task)
 
-        # Sort ready tasks by group, then time
-        ready_tasks.sort(key=lambda x: (x.group, x.time))
+        # Check which groups are currently executing
+        current_groups = {executing_tasks[task_name].group for task_name in executing_tasks if executing_tasks[task_name].group}
 
-        # Start executing ready tasks
         while ready_tasks and len(executing_tasks) < cpu_cores:
+            # Get next task
             next_task = ready_tasks.pop(0)
-            if all(task.group == next_task.group for task in executing_tasks.values()) or len(executing_tasks) == 0:
-                executing_tasks[next_task.name] = next_task
 
-        # Log the current time step
+            # If no groups are currently executing or the next task's group matches one that's executing
+            if not current_groups or next_task.group in current_groups or not next_task.group:
+                executing_tasks[next_task.name] = next_task
+                if next_task.group:
+                    groups_in_execution.add(next_task.group)
+                    current_groups.add(next_task.group)
+            else:
+                waiting_tasks.append(next_task)
+
         current_executing_tasks = [task.name for task in executing_tasks.values() if task.time > 0]
+        group_name = ','.join(sorted(set([task.group for task in executing_tasks.values() if task.time > 0 and task.group])))
+
         schedule.append({
             'Time': time + 1,
             'Tasks being Executed': ','.join(sorted(current_executing_tasks)),
-            'Group Name': next(iter(executing_tasks.values())).group if executing_tasks else ""
+            'Group Name': group_name
         })
 
-        # Update time
         for task in executing_tasks.values():
             task.time -= 1
 
-        time += 1
+        if executing_tasks:
+            time += 1
 
-    return time - 1, schedule  # Subtract the extra time step added at the end
+    return time, schedule
